@@ -1,0 +1,870 @@
+{
+  "info": {
+    "_postman_id": "b7c1f2a4-9d3e-4c58-8f21-6a0d5e7b1c93",
+    "name": "REST API Development - CRUD, Auth & Validation",
+    "description": "Topic 7 practical: HTTP methods (GET/POST/PUT/PATCH/DELETE), path params, query params, request bodies, status codes, JSON, validation, authentication, authorization and error responses.\n\nHow to use:\n1. Start the API:  cd server && npm run dev   (http://localhost:4000)\n2. Import this collection AND the environment file `REST-API-Development.postman_environment.json`.\n3. Select the \"REST API Development - Local\" environment.\n4. Run folder 01 first - it stores the JWT into the `token` environment variable automatically.\n5. Run the folders in order, or use the Collection Runner on the whole collection.\n\nDemo accounts: admin@example.com / Admin@123 (admin) and user@example.com / User@123 (user).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "00 - Health & discovery",
+      "description": "Public endpoints. No token required.",
+      "item": [
+        {
+          "name": "Health check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('JSON content type', () => pm.response.to.have.header('Content-Type'));",
+                  "const body = pm.response.json();",
+                  "pm.test('status is ok', () => pm.expect(body.data.status).to.eql('ok'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Liveness probe. Returns { data: { status, uptimeSeconds, timestamp } }."
+          },
+          "response": []
+        },
+        {
+          "name": "API discovery document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('lists endpoints', () => pm.expect(pm.response.json().data.endpoints.listProducts).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}",
+              "host": ["{{baseUrl}}"],
+              "path": [""]
+            },
+            "description": "Self-describing index of every endpoint, with the supported categories."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 - Authentication & authorization",
+      "description": "Exchange credentials for a JWT and inspect the resulting identity.",
+      "item": [
+        {
+          "name": "Login as admin (saves token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns a bearer token', () => {",
+                  "  pm.expect(body.data.token).to.be.a('string');",
+                  "  pm.expect(body.data.tokenType).to.eql('Bearer');",
+                  "});",
+                  "pm.test('does not leak the password hash', () => pm.expect(body.data.user).to.not.have.property('passwordHash'));",
+                  "pm.environment.set('token', body.data.token);",
+                  "pm.environment.set('adminToken', body.data.token);",
+                  "pm.environment.set('userId', body.data.user.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"Admin@123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "POST with a JSON request body. The token script stores the JWT in the environment so later requests can reuse it."
+          },
+          "response": []
+        },
+        {
+          "name": "Login as standard user (saves token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('role is user', () => pm.expect(body.data.user.role).to.eql('user'));",
+                  "pm.environment.set('userToken', body.data.token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"User@123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "The non-admin account. Its token is used to prove that writes return 403 Forbidden."
+          },
+          "response": []
+        },
+        {
+          "name": "Register a new account (201 Created)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('Location header points at the new user', () => pm.expect(pm.response.headers.get('Location')).to.include('/api/users/'));",
+                  "const body = pm.response.json();",
+                  "pm.test('role defaults to user', () => pm.expect(body.data.user.role).to.eql('user'));",
+                  "pm.environment.set('newUserEmail', body.data.user.email);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman Tester\",\n  \"email\": \"postman{{$timestamp}}@example.com\",\n  \"password\": \"Secret123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "register"]
+            },
+            "description": "Demonstrates 201 Created, a Location response header and the $timestamp dynamic variable to keep the email unique."
+          },
+          "response": []
+        },
+        {
+          "name": "Who am I? (GET /auth/me)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('token maps to the admin user', () => pm.expect(pm.response.json().data.user.email).to.eql('admin@example.com'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "me"]
+            },
+            "description": "Authentication demo: the server reads the Bearer token, verifies the signature and returns the matching user."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 - Products - READ (query parameters)",
+      "description": "GET requests never use a body - filters travel in the query string.",
+      "item": [
+        {
+          "name": "List products (pagination) - saves productId",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns a data array', () => pm.expect(body.data).to.be.an('array'));",
+                  "pm.test('returns pagination meta', () => {",
+                  "  pm.expect(body.meta).to.include.keys('page', 'limit', 'total', 'totalPages', 'hasNext', 'hasPrev');",
+                  "});",
+                  "pm.test('X-Total-Count header is exposed', () => pm.expect(pm.response.headers.get('X-Total-Count')).to.be.a('string'));",
+                  "if (body.data.length > 0) {",
+                  "  pm.environment.set('productId', body.data[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/products?page=1&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "5" }
+              ]
+            },
+            "description": "Query parameters: ??page=1&limit=5. Stores the first product id for the /products/:id requests."
+          },
+          "response": []
+        },
+        {
+          "name": "Search + sort + field projection",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('only the requested fields come back', () => {",
+                  "  const first = pm.response.json().data[0];",
+                  "  pm.expect(Object.keys(first).sort()).to.eql(['id', 'name', 'price']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/products?search=mouse&sort=price&order=desc&fields=id,name,price",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"],
+              "query": [
+                { "key": "search", "value": "mouse" },
+                { "key": "sort", "value": "price" },
+                { "key": "order", "value": "desc" },
+                { "key": "fields", "value": "id,name,price" }
+              ]
+            },
+            "description": "Free-text search, sorting and sparse field selection, all in one query string."
+          },
+          "response": []
+        },
+        {
+          "name": "Filter by category + price range + stock",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/products?category=electronics&minPrice=10&maxPrice=100&inStock=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"],
+              "query": [
+                { "key": "category", "value": "electronics" },
+                { "key": "minPrice", "value": "10" },
+                { "key": "maxPrice", "value": "100" },
+                { "key": "inStock", "value": "true" }
+              ]
+            },
+            "description": "Numeric and boolean query parameters. Try category=spaceships to see a 422 validation error."
+          },
+          "response": []
+        },
+        {
+          "name": "Read one product (path parameter)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('returns the requested id', () => pm.expect(pm.response.json().data.id).to.eql(pm.environment.get('productId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{productId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["products", "{{productId}}"]
+            },
+            "description": "Path parameter routing: /products/:id. Run the previous request first so {{productId}} is populated."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 - Products - WRITE (CRUD lifecycle)",
+      "description": "POST -> PUT -> PATCH -> DELETE. Every request here needs the admin token.",
+      "item": [
+        {
+          "name": "Create (201 Created) - saves newProductId",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('Location header is set', () => pm.expect(pm.response.headers.get('Location')).to.include('/api/products/'));",
+                  "const body = pm.response.json();",
+                  "pm.test('price string was coerced to a number', () => pm.expect(body.data.price).to.eql(79.9));",
+                  "pm.test('category enum was normalised', () => pm.expect(body.data.category).to.eql('electronics'));",
+                  "pm.environment.set('newProductId', body.data.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"USB-C Hub\",\n  \"description\": \"7-in-1 aluminium hub with HDMI output and SD card reader.\",\n  \"price\": \"79.9\",\n  \"category\": \"Electronics\",\n  \"stock\": \"12\",\n  \"tags\": [\"usb-c\", \"adapter\"]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"]
+            },
+            "description": "Note the deliberately sloppy input (string price/stock, capitalised category) - the validation layer normalises it."
+          },
+          "response": []
+        },
+        {
+          "name": "Replace (PUT) - omitted fields reset",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('name was replaced', () => pm.expect(body.data.name).to.eql('USB-C Hub v2'));",
+                  "pm.test('PUT resets omitted stock to 0', () => pm.expect(body.data.stock).to.eql(0));",
+                  "pm.test('PUT resets omitted tags to []', () => pm.expect(body.data.tags).to.eql([]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"USB-C Hub v2\",\n  \"price\": 99,\n  \"category\": \"electronics\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["products", "{{newProductId}}"]
+            },
+            "description": "PUT = full replacement. Because stock/tags/description are absent they are reset to their defaults."
+          },
+          "response": []
+        },
+        {
+          "name": "Partial update (PATCH) - other fields untouched",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('only price + stock changed', () => pm.expect(body.meta.updatedFields.sort()).to.eql(['price', 'stock']));",
+                  "pm.test('name survived the patch', () => pm.expect(body.data.name).to.eql('USB-C Hub v2'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"price\": 89.5,\n  \"stock\": 3\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["products", "{{newProductId}}"]
+            },
+            "description": "PATCH = merge. Compare the response with the PUT response above to see the difference."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete (DELETE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('returns the deleted resource', () => pm.expect(pm.response.json().data.id).to.eql(pm.environment.get('newProductId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["products", "{{newProductId}}"]
+            },
+            "description": "Admin-only. Returns the removed resource so the client can undo the change locally."
+          },
+          "response": []
+        },
+        {
+          "name": "Confirm it is gone (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('error code is PRODUCT_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('PRODUCT_NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{newProductId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["products", "{{newProductId}}"]
+            },
+            "description": "The resource no longer exists, so the API answers 404 with the standard error envelope."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04 - Error & status-code scenarios",
+      "description": "One request per failure mode, for teaching HTTP status codes.",
+      "item": [
+        {
+          "name": "401 - no token at all",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('AUTH_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('AUTH_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"]
+            },
+            "description": "No Authorization header -> 401, the resource is protected."
+          },
+          "response": []
+        },
+        {
+          "name": "401 - tampered token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_TOKEN', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer not.a.real.token", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"]
+            },
+            "description": "The JWT signature check fails -> 401 INVALID_TOKEN."
+          },
+          "response": []
+        },
+        {
+          "name": "401 - wrong password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_CREDENTIALS', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_CREDENTIALS'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"definitely-wrong\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "Wrong email and wrong password return the same message on purpose, so the endpoint cannot be used to enumerate accounts."
+          },
+          "response": []
+        },
+        {
+          "name": "403 - authenticated but not authorised",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('FORBIDDEN', () => pm.expect(pm.response.json().error.code).to.eql('FORBIDDEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{userToken}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Sneaky Item\",\n  \"price\": 10,\n  \"category\": \"electronics\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"]
+            },
+            "description": "The standard user IS authenticated (valid token) but the admin role is required -> 403, not 401. Run folder 01 first."
+          },
+          "response": []
+        },
+        {
+          "name": "422 - validation error (request body)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "const error = pm.response.json().error;",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('reports every offending field', () => {",
+                  "  const fields = error.details.map((d) => d.field).sort();",
+                  "  pm.expect(fields).to.eql(['category', 'name', 'price']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"X\",\n  \"price\": -5,\n  \"category\": \"spaceships\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"]
+            },
+            "description": "The JSON is syntactically valid but semantically wrong -> 422 with a per-field details array."
+          },
+          "response": []
+        },
+        {
+          "name": "422 - validation error (query parameters)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "pm.test('all details are query errors', () => {",
+                  "  const details = pm.response.json().error.details;",
+                  "  pm.expect(details.every((d) => d.in === 'query')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/products?limit=999&sort=colour&unknown=1",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"],
+              "query": [
+                { "key": "limit", "value": "999" },
+                { "key": "sort", "value": "colour" },
+                { "key": "unknown", "value": "1" }
+              ]
+            },
+            "description": "Query strings are validated too: limit out of range, unknown sort field, unknown parameter."
+          },
+          "response": []
+        },
+        {
+          "name": "400 - malformed JSON body",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('INVALID_JSON', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_JSON'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"email\": ",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "The JSON parser throws, the error handler converts it to 400 INVALID_JSON."
+          },
+          "response": []
+        },
+        {
+          "name": "400 - malformed path parameter",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('INVALID_ID', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_ID'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/products/not-a-uuid",
+              "host": ["{{baseUrl}}"],
+              "path": ["products", "not-a-uuid"]
+            },
+            "description": "400 (bad request) for a malformed id, versus 404 (not found) for a well-formed but unknown id."
+          },
+          "response": []
+        },
+        {
+          "name": "404 - well-formed but unknown id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('PRODUCT_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('PRODUCT_NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/products/00000000-0000-4000-8000-000000000000",
+              "host": ["{{baseUrl}}"],
+              "path": ["products", "00000000-0000-4000-8000-000000000000"]
+            },
+            "description": "Valid UUID, no such product -> 404."
+          },
+          "response": []
+        },
+        {
+          "name": "404 - unknown route",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('ROUTE_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('ROUTE_NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/nope",
+              "host": ["{{baseUrl}}"],
+              "path": ["nope"]
+            },
+            "description": "No route matches, so the catch-all 404 handler answers with JSON instead of an HTML page."
+          },
+          "response": []
+        },
+        {
+          "name": "405 - method not allowed on the collection",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('405 Method Not Allowed', () => pm.response.to.have.status(405));",
+                  "pm.test('Allow header lists the supported methods', () => pm.expect(pm.response.headers.get('Allow')).to.eql('GET, POST'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"]
+            },
+            "description": "You cannot PUT the whole collection - you must address one product, so the API answers 405 and tells you which methods work."
+          },
+          "response": []
+        },
+        {
+          "name": "422 - PATCH with an empty body",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "pm.test('asks for at least one updatable field', () => pm.expect(pm.response.json().error.message).to.include('validation'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
+            "url": {
+              "raw": "{{baseUrl}}/products/{{productId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["products", "{{productId}}"]
+            },
+            "description": "An empty PATCH is meaningless, so it is rejected instead of silently succeeding."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000/api", "type": "string" }
+  ]
+}

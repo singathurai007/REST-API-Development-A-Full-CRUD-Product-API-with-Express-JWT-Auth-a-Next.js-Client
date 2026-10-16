@@ -20,6 +20,7 @@ covered end to end.
 | JSON | Request + response envelopes (`{ data, meta, message }`) |
 | API validation | [productValidators.js](server/src/validators/productValidators.js), [authValidators.js](server/src/validators/authValidators.js), [validate.js](server/src/middleware/validate.js) |
 | Authentication basics | JWT + bcrypt — [auth.js](server/src/middleware/auth.js), [authController.js](server/src/controllers/authController.js) |
+| Token refresh + logout (revocation) | Access/refresh token pair, rotation & `jti` blacklist — `POST /auth/refresh`, `POST /auth/logout` |
 | Authorization basics | Role-based access control (RBAC) — `authorize('admin')` in [productRoutes.js](server/src/routes/productRoutes.js) |
 | Error responses | Single error envelope — [errorHandler.js](server/src/middleware/errorHandler.js) |
 | API testing in Postman/Insomnia | [postman/](server/postman) collection + environment |
@@ -41,7 +42,7 @@ rest-api-project/
 │   │   ├── middleware/            auth, validate, errorHandler, rateLimit, logger, 405
 │   │   ├── data/store.js          in-memory store + seed data
 │   │   └── utils/ApiError.js      typed HTTP errors
-│   ├── tests/api.test.js          27 automated API tests (node:test + supertest)
+│   ├── tests/api.test.js          35 automated API tests (node:test + supertest)
 │   └── postman/                   Postman/Insomnia collection + environment
 │
 └── client/                        Next.js 14 frontend  (http://localhost:3000)
@@ -101,8 +102,10 @@ Base URL: `http://localhost:4000/api`
 |---|---|---|
 | GET | `/health` | Liveness probe |
 | GET | `/` | Discovery document listing every endpoint |
-| POST | `/auth/register` | Create an account → **201** + JWT |
-| POST | `/auth/login` | Exchange credentials for a JWT → **200** |
+| POST | `/auth/register` | Create an account → **201** + token pair |
+| POST | `/auth/login` | Exchange credentials for a token pair → **200** |
+| POST | `/auth/refresh` | Exchange a refresh token for a new pair → **200** |
+| POST | `/auth/logout` | Revoke the access + refresh token → **200** (idempotent) |
 
 ### Requires `Authorization: Bearer <token>`
 
@@ -115,6 +118,49 @@ Base URL: `http://localhost:4000/api`
 | PUT | `/products/:id` | **admin** | Full replace (omitted fields reset) |
 | PATCH | `/products/:id` | **admin** | Partial update |
 | DELETE | `/products/:id` | **admin** | Delete |
+
+#### Access + refresh tokens
+
+`/auth/login` and `/auth/register` return **two** JWTs:
+
+```json
+{
+  "data": {
+    "user": { "id": "…", "email": "…", "role": "admin" },
+    "token": "<access token>",
+    "refreshToken": "<refresh token>",
+    "tokenType": "Bearer",
+    "expiresIn": "1h",
+    "refreshExpiresIn": "7d"
+  }
+}
+```
+
+The access token is short-lived (`JWT_EXPIRES_IN`, default `1h`) and is what you send on every
+request. The refresh token is long-lived (`JWT_REFRESH_EXPIRES_IN`, default `7d`) and exists only
+to mint a new pair — so an expired access token no longer means "log in again":
+
+```http
+POST /api/auth/refresh   { "refreshToken": "<refresh token>" }   # -> 200 + a NEW pair
+# Authorization: Bearer <access token>     plus the body below
+POST /api/auth/logout    { "refreshToken": "<refresh token>" }   # -> 200 { revoked: [...] }
+```
+
+Both token kinds carry a unique `jti` (JWT id), which is what makes revocation possible:
+
+- **Refresh rotation** — refresh tokens are single use. Each `/auth/refresh` call returns a new
+  one and retires the one you sent. Replaying a retired token is treated as a leak: the request
+  fails with `401 REFRESH_TOKEN_REUSED` **and every session for that account is revoked**.
+- **Logout blacklist** — `/auth/logout` adds the access token's `jti` to a revocation list, so a
+  token that has *not* expired yet stops working immediately (`401 TOKEN_REVOKED`), and revokes the
+  refresh token at the same time. The route deliberately needs no valid access token (a session
+  whose access token already expired must still be closable) and is idempotent.
+- The two token kinds are signed with **different secrets**, so neither can be presented in place
+  of the other (`401 INVALID_TOKEN` / `401 INVALID_REFRESH_TOKEN`).
+
+The Next.js client does all of this transparently: [lib/api.js](client/lib/api.js) catches a `401`,
+calls `POST /auth/refresh` once (concurrent requests share a single call), stores the new pair and
+replays the original request.
 
 **PUT vs PATCH** — the distinction is enforced and observable:
 
@@ -198,6 +244,7 @@ Status codes in use: `400` malformed JSON / bad path param · `401` missing or i
 | `02 - Products - READ` | All query parameters, pagination `meta`, `X-Total-Count` |
 | `03 - Products - WRITE` | Full POST → PUT → PATCH → DELETE lifecycle |
 | `04 - Error & status-code scenarios` | One request per failure mode: 400/401/403/404/405/422 |
+| `05 - Refresh token & logout` | Rotating the token pair, reuse detection, access-token revocation |
 
 Every request ships with a **Tests** script (`pm.test`), so you can also hit **Run** on the whole
 collection and get a green/red report. On Windows, `Ctrl+Alt+C` opens the Postman console if you
@@ -210,7 +257,7 @@ want to inspect the raw request/response.
 
 ## 6. Automated tests
 
-The same scenarios are covered by 27 automated tests (no server or port needed):
+The same scenarios are covered by 35 automated tests (no server or port needed):
 
 ```powershell
 cd server
@@ -218,15 +265,16 @@ npm test
 ```
 
 ```
-ℹ tests 27
-ℹ pass 27
+ℹ tests 35
+ℹ pass 35
 ℹ fail 0
 ```
 
 They cover: health/discovery, registration + duplicate email, login success/failure, 401 with a
 missing or tampered token, 403 for a non-admin write, pagination and every query filter, field
 projection, 400 vs 404 on path parameters, the full POST→PUT→PATCH→DELETE cycle, malformed JSON,
-unknown routes, 405 with `Allow`, and the consistency of the error envelope.
+unknown routes, 405 with `Allow`, the consistency of the error envelope, plus the access + refresh
+token lifecycle (rotation, reuse detection, revocation and idempotent logout).
 
 ---
 
@@ -249,7 +297,11 @@ by changing that one file — controllers only use the helpers it exports.
 
 **Auth.** Passwords are hashed with bcrypt (never stored in plain text, and the hash is stripped
 from every response). Tokens are stateless JWTs sent as `Authorization: Bearer <token>`; the
-payload carries `sub` (user id) and `role`, which is what `authorize('admin')` checks.
+payload carries `sub` (user id), `role` and a unique `jti`, which is what `authorize('admin')`
+checks. Each login/register returns a short-lived **access** token plus a long-lived **refresh**
+token signed with a *separate* secret. Refresh tokens rotate on every use (single-use), reuse of
+an already-rotated token revokes the whole family, and logging out blacklists the presented access
+token's `jti` so it stops working immediately.
 
 **Gotcha worth knowing.** The auth handlers are deliberately **synchronous**. Express 4 does not
 forward a rejected promise from an `async` handler to the error handler, so a `throw` inside

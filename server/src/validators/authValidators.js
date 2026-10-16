@@ -110,3 +110,46 @@ export function validateLogin(payload = {}) {
 
   return { value, errors };
 }
+
+/** Validates + normalises the POST /api/auth/refresh body. */
+export function validateRefresh(payload = {}) {
+  const errors = [];
+  const value = {};
+
+  if (!isPlainObject(payload)) {
+    return { value: {}, errors: [{ field: 'body', message: 'request body must be a JSON object' }] };
+  }
+
+  if (isMissing(payload.refreshToken)) {
+    errors.push({ field: 'refreshToken', message: 'refreshToken is required' });
+  } else if (typeof payload.refreshToken !== 'string') {
+    errors.push({ field: 'refreshToken', message: 'refreshToken must be a string' });
+  } else {
+    value.refreshToken = payload.refreshToken.trim();
+  }
+
+  return { value, errors };
+}
+
+/**
+ * Validates + normalises the POST /api/auth/logout body.
+ * The body is optional: logout is idempotent, so `{}` is a valid request.
+ */
+export function validateLogout(payload = {}) {
+  const errors = [];
+  const value = {};
+
+  if (!isPlainObject(payload)) {
+    return { value: {}, errors: [{ field: 'body', message: 'request body must be a JSON object' }] };
+  }
+
+  if (payload.refreshToken !== undefined && payload.refreshToken !== null) {
+    if (typeof payload.refreshToken !== 'string') {
+      errors.push({ field: 'refreshToken', message: 'refreshToken must be a string' });
+    } else if (payload.refreshToken.trim() !== '') {
+      value.refreshToken = payload.refreshToken.trim();
+    }
+  }
+
+  return { value, errors };
+}

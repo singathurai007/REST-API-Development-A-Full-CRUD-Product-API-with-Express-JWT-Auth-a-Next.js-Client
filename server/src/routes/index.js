@@ -22,6 +22,8 @@ router.get('/', (req, res) => {
         health: 'GET /api/health',
         register: 'POST /api/auth/register',
         login: 'POST /api/auth/login',
+        refresh: 'POST /api/auth/refresh',
+        logout: 'POST /api/auth/logout',
         currentUser: 'GET /api/auth/me',
         listProducts: 'GET /api/products?page=1&limit=10&search=&category=&sort=price&order=asc',
         getProduct: 'GET /api/products/:id',
@@ -30,7 +32,10 @@ router.get('/', (req, res) => {
         updateProduct: 'PATCH /api/products/:id',
         deleteProduct: 'DELETE /api/products/:id',
       },
-      auth: 'All /api/products routes need "Authorization: Bearer <token>". Writes need the admin role.',
+      auth:
+        'All /api/products routes need "Authorization: Bearer <token>". Writes need the admin role. ' +
+        'Login/register return a short-lived access token plus a long-lived refresh token; ' +
+        'POST /api/auth/refresh exchanges the refresh token for a new pair and POST /api/auth/logout revokes both.',
       categories: CATEGORIES,
     },
   });

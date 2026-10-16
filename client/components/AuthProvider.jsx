@@ -1,11 +1,14 @@
 'use client';
 
-// AuthProvider holds the signed-in user + token for the whole app.
+// AuthProvider holds the signed-in user + token pair for the whole app.
 //
 // It is a plain React context (no libraries). On mount it "hydrates" from
-// localStorage and, if a token is present, calls GET /auth/me to confirm the
-// session is still valid. Any 401 anywhere in the app clears the token so the
-// user is bounced back to /login.
+// localStorage and, if an access token is present, calls GET /auth/me to confirm
+// the session is still valid. An expired access token is renewed transparently
+// with the stored refresh token (see lib/api.js), and a session that cannot be
+// renewed - or any 401 anywhere in the app - clears the tokens so the user is
+// bounced back to /login. Logging out calls POST /auth/logout so the server
+// revokes both tokens before the local copy is dropped.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api, ApiClientError } from '@/lib/api';
@@ -19,17 +22,21 @@ export function AuthProvider({ children }) {
   // the API, so guards don't redirect before hydration finishes.
   const [loading, setLoading] = useState(true);
 
-  // Persist a token in state + localStorage.
-  const applyToken = useCallback((nextToken) => {
-    if (nextToken) api.setToken(nextToken);
-    else api.clearToken();
+  // Persist the access + refresh pair in state + localStorage.
+  const applyTokens = useCallback(({ token: nextToken, refreshToken: nextRefreshToken }) => {
+    if (nextToken) api.setTokens({ token: nextToken, refreshToken: nextRefreshToken });
+    else api.clearTokens();
     setTokenState(nextToken || null);
   }, []);
 
-  const logout = useCallback(() => {
-    api.clearToken();
-    setTokenState(null);
-    setUser(null);
+  // Revokes the pair server-side (best effort) and always clears it locally.
+  const logout = useCallback(async () => {
+    try {
+      await api.logout(); // POST /auth/logout
+    } finally {
+      setTokenState(null);
+      setUser(null);
+    }
   }, []);
 
   // Hydrate the session once on the client.
@@ -46,7 +53,10 @@ export function AuthProvider({ children }) {
     api
       .me() // GET /auth/me -> validates the bearer token
       .then((res) => {
-        if (active) setUser(res?.data?.user ?? null);
+        if (!active) return;
+        setUser(res?.data?.user ?? null);
+        // `api.me()` may have silently renewed the access token on a 401.
+        setTokenState(api.getToken());
       })
       .catch((err) => {
         // A dead/invalid token should not keep the user "logged in".
@@ -75,23 +85,23 @@ export function AuthProvider({ children }) {
   const login = useCallback(
     async ({ email, password }) => {
       const res = await api.login({ email, password }); // POST /auth/login
-      const { user: nextUser, token: nextToken } = res.data;
-      applyToken(nextToken);
+      const { user: nextUser, token: nextToken, refreshToken: nextRefreshToken } = res.data;
+      applyTokens({ token: nextToken, refreshToken: nextRefreshToken });
       setUser(nextUser);
       return nextUser;
     },
-    [applyToken],
+    [applyTokens],
   );
 
   const register = useCallback(
     async ({ name, email, password, role }) => {
       const res = await api.register({ name, email, password, role }); // POST /auth/register
-      const { user: nextUser, token: nextToken } = res.data;
-      applyToken(nextToken);
+      const { user: nextUser, token: nextToken, refreshToken: nextRefreshToken } = res.data;
+      applyTokens({ token: nextToken, refreshToken: nextRefreshToken });
       setUser(nextUser);
       return nextUser;
     },
-    [applyToken],
+    [applyTokens],
   );
 
   const value = useMemo(

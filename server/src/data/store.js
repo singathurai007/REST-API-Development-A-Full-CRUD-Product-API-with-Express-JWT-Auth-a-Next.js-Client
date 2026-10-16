@@ -11,10 +11,16 @@ import bcrypt from 'bcryptjs';
 
 const isoNow = () => new Date().toISOString();
 
-/** @type {{ users: object[], products: object[] }} */
+/** @type {{ users: object[], products: object[], refreshTokens: object[], revokedAccessTokens: object[] }} */
 export const db = {
   users: [],
   products: [],
+  // One row per issued refresh token, so it can be rotated on use and revoked
+  // on logout. Wiped on restart, which is fine for an in-memory demo.
+  refreshTokens: [],
+  // Access tokens whose `jti` was revoked at logout. Honoured until the token
+  // would have expired anyway.
+  revokedAccessTokens: [],
 };
 
 export const ROLES = ['user', 'admin'];
@@ -104,6 +110,10 @@ export function seed({ force = false } = {}) {
 
   const timestamp = isoNow();
 
+  // A forced reseed also clears any in-flight sessions.
+  db.refreshTokens = [];
+  db.revokedAccessTokens = [];
+
   db.users = [
     makeUser({
       name: 'Ada Admin',
@@ -159,6 +169,75 @@ export function removeProduct(id) {
   if (index === -1) return null;
   const [removed] = db.products.splice(index, 1);
   return removed;
+}
+
+/* ------------------------------------------------------------------ */
+/* Tokens: refresh-token rotation + access-token revocation            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Drops rows whose token has expired anyway. Called whenever a token is
+ * issued or revoked so both lists stay small without a background timer.
+ */
+export function pruneTokenStore(now = Date.now()) {
+  const isExpired = (iso) => new Date(iso).getTime() <= now;
+  db.refreshTokens = db.refreshTokens.filter((row) => !isExpired(row.expiresAt));
+  db.revokedAccessTokens = db.revokedAccessTokens.filter((row) => !isExpired(row.expiresAt));
+}
+
+/** Records a freshly issued refresh token so it can be rotated/revoked later. */
+export function rememberRefreshToken({ jti, userId, expiresAt }) {
+  pruneTokenStore();
+  const row = { jti, userId, expiresAt, revokedAt: null, createdAt: isoNow() };
+  db.refreshTokens.push(row);
+  return row;
+}
+
+export function findRefreshToken(jti) {
+  if (!jti) return undefined;
+  return db.refreshTokens.find((row) => row.jti === jti);
+}
+
+/** Revokes one refresh token. Returns the row, or undefined when unknown. */
+export function revokeRefreshTokenRecord(jti, reason = 'logout') {
+  const row = findRefreshToken(jti);
+  if (!row) return undefined;
+  if (!row.revokedAt) {
+    row.revokedAt = isoNow();
+    row.revokedReason = reason;
+  }
+  return row;
+}
+
+/**
+ * Revokes every still-active refresh token of a user.
+ * Used when a *already rotated* token is presented again: that means the token
+ * leaked, so the safest reaction is to end every session for that account.
+ */
+export function revokeAllRefreshTokensForUser(userId, reason = 'token-reuse') {
+  let count = 0;
+  for (const row of db.refreshTokens) {
+    if (row.userId === userId && !row.revokedAt) {
+      row.revokedAt = isoNow();
+      row.revokedReason = reason;
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/** Adds an access token's id to the revocation list (used on logout). */
+export function blacklistAccessToken({ jti, expiresAt }) {
+  pruneTokenStore();
+  if (isAccessTokenRevoked(jti)) return false;
+  db.revokedAccessTokens.push({ jti, expiresAt, revokedAt: isoNow() });
+  return true;
+}
+
+/** True when the access token's `jti` was revoked before it expired. */
+export function isAccessTokenRevoked(jti) {
+  if (!jti) return false;
+  return db.revokedAccessTokens.some((row) => row.jti === jti);
 }
 
 export { isoNow };

@@ -84,9 +84,11 @@
                   "  pm.expect(body.data.token).to.be.a('string');",
                   "  pm.expect(body.data.tokenType).to.eql('Bearer');",
                   "});",
+                  "pm.test('returns a refresh token as well', () => pm.expect(body.data.refreshToken).to.be.a('string'));",
                   "pm.test('does not leak the password hash', () => pm.expect(body.data.user).to.not.have.property('passwordHash'));",
                   "pm.environment.set('token', body.data.token);",
                   "pm.environment.set('adminToken', body.data.token);",
+                  "pm.environment.set('refreshToken', body.data.refreshToken);",
                   "pm.environment.set('userId', body.data.user.id);"
                 ]
               }
@@ -120,7 +122,8 @@
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
                   "const body = pm.response.json();",
                   "pm.test('role is user', () => pm.expect(body.data.user.role).to.eql('user'));",
-                  "pm.environment.set('userToken', body.data.token);"
+                  "pm.environment.set('userToken', body.data.token);",
+                  "pm.environment.set('userRefreshToken', body.data.refreshToken);"
                 ]
               }
             }
@@ -199,6 +202,42 @@
               "path": ["auth", "me"]
             },
             "description": "Authentication demo: the server reads the Bearer token, verifies the signature and returns the matching user."
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh the token pair (rotates the refresh token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns a fresh access token', () => pm.expect(body.data.token).to.be.a('string'));",
+                  "pm.test('rotates the refresh token', () => pm.expect(body.data.refreshToken).to.not.eql(pm.environment.get('refreshToken')));",
+                  "pm.environment.set('token', body.data.token);",
+                  "pm.environment.set('adminToken', body.data.token);",
+                  "pm.environment.set('refreshToken', body.data.refreshToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "refresh"]
+            },
+            "description": "Exchanges the long-lived refresh token for a brand-new pair. Refresh tokens are single use: the presented one is rotated out, so the test script stores the new values for the following folders."
           },
           "response": []
         }
@@ -858,6 +897,140 @@
               "path": ["products", "{{productId}}"]
             },
             "description": "An empty PATCH is meaningless, so it is rejected instead of silently succeeding."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05 - Refresh token & logout",
+      "description": "The token-pair lifecycle: logout revokes the access token (blacklist) and the refresh token. It runs on its own throwaway session, so the {{token}} used by the earlier folders stays usable when you run the whole collection.",
+      "item": [
+        {
+          "name": "Login as a throwaway session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.environment.set('throwawayToken', body.data.token);",
+                  "pm.environment.set('throwawayRefreshToken', body.data.refreshToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"User@123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "A private session, so revoking it below cannot break the {{token}} that the other folders reuse."
+          },
+          "response": []
+        },
+        {
+          "name": "Logout (blacklists the access token + revokes the refresh token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('both credentials were revoked', () => {",
+                  "  pm.expect(body.data.revoked).to.include('accessToken');",
+                  "  pm.expect(body.data.revoked).to.include('refreshToken');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{throwawayToken}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json", "type": "text" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{throwawayRefreshToken}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "logout"]
+            },
+            "description": "The access token from the header is blacklisted and the refresh token from the body is revoked. The route needs no valid access token and is idempotent."
+          },
+          "response": []
+        },
+        {
+          "name": "The logged-out access token is rejected (401 TOKEN_REVOKED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('code is TOKEN_REVOKED', () => pm.expect(pm.response.json().error.code).to.eql('TOKEN_REVOKED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{throwawayToken}}", "type": "text" }],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "me"]
+            },
+            "description": "Its signature is still valid and it has not expired, but logout revoked it - so it stops working immediately."
+          },
+          "response": []
+        },
+        {
+          "name": "The revoked refresh token cannot mint a new pair (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('code is REFRESH_TOKEN_REUSED', () => pm.expect(pm.response.json().error.code).to.eql('REFRESH_TOKEN_REUSED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{throwawayRefreshToken}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "refresh"]
+            },
+            "description": "A revoked refresh token is a replayed refresh token, which is treated as a leak and rejected."
           },
           "response": []
         }

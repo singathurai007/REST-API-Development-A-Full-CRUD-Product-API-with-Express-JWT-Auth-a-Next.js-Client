@@ -21,6 +21,20 @@ let userToken;
 const bearer = (token) => ({ Authorization: `Bearer ${token}` });
 const login = (credentials) => request(app).post('/api/auth/login').send(credentials);
 
+/**
+ * Creates a brand-new account and returns its fresh token pair, so the
+ * token-lifecycle tests below never disturb the shared admin/user sessions.
+ */
+async function registerFresh(label) {
+  const email = `${label}-${Date.now()}-${Math.random().toString(16).slice(2)}@example.com`;
+  const res = await request(app)
+    .post('/api/auth/register')
+    .send({ name: 'Token Tester', email, password: 'Secret123' });
+
+  assert.equal(res.status, 201, 'register should succeed');
+  return res.body.data;
+}
+
 before(async () => {
   seed({ force: true }); // deterministic demo data
   app = createApp({ logRequests: false });
@@ -106,6 +120,126 @@ test('GET /api/auth/me returns the current user for a valid token', async () => 
   assert.equal(res.status, 200);
   assert.equal(res.body.data.user.email, SEED_CREDENTIALS.admin.email);
   assert.deepEqual(res.body.meta.permissions, ['read', 'create', 'update', 'delete']);
+});
+
+/* ------------------------------------------------------------------ */
+/* Access + refresh token lifecycle                                    */
+/* ------------------------------------------------------------------ */
+
+test('POST /api/auth/login returns an access token and a refresh token', async () => {
+  const res = await login(SEED_CREDENTIALS.user);
+
+  assert.equal(res.status, 200);
+  assert.equal(typeof res.body.data.token, 'string', 'access token is returned as `token`');
+  assert.equal(typeof res.body.data.refreshToken, 'string');
+  assert.notEqual(res.body.data.token, res.body.data.refreshToken);
+  assert.equal(res.body.data.refreshExpiresIn, '7d');
+});
+
+test('POST /api/auth/refresh rotates the refresh token and returns a working access token', async () => {
+  const session = await registerFresh('rotate');
+
+  const refreshed = await request(app)
+    .post('/api/auth/refresh')
+    .send({ refreshToken: session.refreshToken });
+
+  assert.equal(refreshed.status, 200);
+  assert.equal(typeof refreshed.body.data.token, 'string');
+  assert.notEqual(refreshed.body.data.refreshToken, session.refreshToken, 'the refresh token rotates');
+
+  // The freshly minted access token authenticates straight away.
+  const me = await request(app).get('/api/auth/me').set(bearer(refreshed.body.data.token));
+  assert.equal(me.status, 200);
+  assert.equal(me.body.data.user.email, session.user.email);
+
+  // ...and the rotated refresh token can be exchanged again.
+  const again = await request(app)
+    .post('/api/auth/refresh')
+    .send({ refreshToken: refreshed.body.data.refreshToken });
+  assert.equal(again.status, 200);
+});
+
+test('POST /api/auth/refresh rejects a re-used refresh token and revokes the whole family', async () => {
+  const session = await registerFresh('reuse');
+
+  const first = await request(app)
+    .post('/api/auth/refresh')
+    .send({ refreshToken: session.refreshToken });
+  assert.equal(first.status, 200);
+
+  // Replaying the already-rotated token is treated as a leak.
+  const replay = await request(app)
+    .post('/api/auth/refresh')
+    .send({ refreshToken: session.refreshToken });
+  assert.equal(replay.status, 401);
+  assert.equal(replay.body.error.code, 'REFRESH_TOKEN_REUSED');
+
+  // ...and it invalidates the token that the legitimate rotation handed out.
+  const afterRevoke = await request(app)
+    .post('/api/auth/refresh')
+    .send({ refreshToken: first.body.data.refreshToken });
+  assert.equal(afterRevoke.status, 401);
+});
+
+test('POST /api/auth/refresh returns 422 when refreshToken is missing', async () => {
+  const res = await request(app).post('/api/auth/refresh').send({});
+
+  assert.equal(res.status, 422);
+  assert.equal(res.body.error.code, 'VALIDATION_ERROR');
+  assert.equal(res.body.error.details[0].field, 'refreshToken');
+});
+
+test('POST /api/auth/refresh returns 401 for anything that is not a refresh token', async () => {
+  const garbage = await request(app)
+    .post('/api/auth/refresh')
+    .send({ refreshToken: 'not.a.real.token' });
+  assert.equal(garbage.status, 401);
+  assert.equal(garbage.body.error.code, 'INVALID_REFRESH_TOKEN');
+
+  // A perfectly valid *access* token must not be accepted here either.
+  const session = await registerFresh('cross');
+  const cross = await request(app).post('/api/auth/refresh').send({ refreshToken: session.token });
+  assert.equal(cross.status, 401);
+  assert.equal(cross.body.error.code, 'INVALID_REFRESH_TOKEN');
+});
+
+test('a refresh token cannot be used as an access token', async () => {
+  const session = await registerFresh('access');
+
+  const res = await request(app).get('/api/auth/me').set(bearer(session.refreshToken));
+
+  assert.equal(res.status, 401);
+  assert.equal(res.body.error.code, 'INVALID_TOKEN');
+});
+
+test('POST /api/auth/logout blacklists the access token and revokes the refresh token', async () => {
+  const session = await registerFresh('logout');
+
+  const out = await request(app)
+    .post('/api/auth/logout')
+    .set(bearer(session.token))
+    .send({ refreshToken: session.refreshToken });
+
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.body.data.revoked.sort(), ['accessToken', 'refreshToken']);
+
+  // The access token is revoked even though its `exp` is far in the future.
+  const me = await request(app).get('/api/auth/me').set(bearer(session.token));
+  assert.equal(me.status, 401);
+  assert.equal(me.body.error.code, 'TOKEN_REVOKED');
+
+  // The refresh token can no longer be exchanged for a new pair.
+  const refresh = await request(app)
+    .post('/api/auth/refresh')
+    .send({ refreshToken: session.refreshToken });
+  assert.equal(refresh.status, 401);
+});
+
+test('POST /api/auth/logout is idempotent and needs no credentials', async () => {
+  const res = await request(app).post('/api/auth/logout').send({});
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.data.revoked, []);
 });
 
 /* ------------------------------------------------------------------ */

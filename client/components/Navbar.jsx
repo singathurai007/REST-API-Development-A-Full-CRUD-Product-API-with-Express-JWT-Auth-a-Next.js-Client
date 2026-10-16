@@ -12,8 +12,8 @@ export default function Navbar() {
   const { user, isAuthenticated, logout } = useAuth();
   const router = useRouter();
 
-  function handleLogout() {
-    logout();
+  async function handleLogout() {
+    await logout(); // POST /auth/logout, then clears the local token pair
     router.push('/login');
   }
 
